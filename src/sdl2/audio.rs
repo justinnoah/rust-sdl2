@@ -95,10 +95,10 @@ impl AudioSubsystem {
 
     /// Opens a new audio device which uses queueing rather than older callback method.
     #[inline]
-    pub fn open_queue<'a, Channel, D>(&self, device: D, spec: &AudioSpecDesired) -> Result<AudioQueue<Channel>, String>
+    pub fn open_queue<'a, Channel, D>(&self, device: D, is_capture: bool, spec: &AudioSpecDesired) -> Result<AudioQueue<Channel>, String>
     where Channel: AudioFormatNum, D: Into<Option<&'a str>>,
     {
-        AudioQueue::open_queue(self, device, spec)
+        AudioQueue::open_queue(self, device, is_capture, spec)
     }
 
     pub fn current_audio_driver(&self) -> &'static str {
@@ -110,8 +110,8 @@ impl AudioSubsystem {
         }
     }
 
-    pub fn num_audio_playback_devices(&self) -> Option<u32> {
-        let result = unsafe { sys::SDL_GetNumAudioDevices(0) };
+    pub fn get_num_audio_devices(&self, is_capture: bool) -> Option<u32> {
+        let result = unsafe { sys::SDL_GetNumAudioDevices(is_capture as i32) };
         if result < 0 {
             // SDL cannot retrieve a list of audio devices. This is not necessarily an error (see the SDL2 docs).
             None
@@ -120,9 +120,9 @@ impl AudioSubsystem {
         }
     }
 
-    pub fn audio_playback_device_name(&self, index: u32) -> Result<String, String> {
+    pub fn get_audio_device_name(&self, index: u32, is_capture: bool) -> Result<String, String> {
         unsafe {
-            let dev_name = sys::SDL_GetAudioDeviceName(index as c_int, 0);
+            let dev_name = sys::SDL_GetAudioDeviceName(index as c_int, is_capture as c_int);
             if dev_name.is_null() {
                 Err(get_error())
             } else {
@@ -548,7 +548,7 @@ pub struct AudioQueue<Channel: AudioFormatNum> {
 
 impl<'a, Channel: AudioFormatNum> AudioQueue<Channel> {
     /// Opens a new audio device given the desired parameters and callback.
-    pub fn open_queue<D: Into<Option<&'a str>>>(a: &AudioSubsystem, device: D, spec: &AudioSpecDesired) -> Result<AudioQueue<Channel>, String> {
+    pub fn open_queue<D: Into<Option<&'a str>>>(a: &AudioSubsystem, device: D, is_capture: bool, spec: &AudioSpecDesired) -> Result<AudioQueue<Channel>, String> {
         use std::mem::MaybeUninit;
 
         let desired = AudioSpecDesired::convert_queue_to_ll::<Channel, Option<i32>, Option<u8>, Option<u16>>(spec.freq, spec.channels, spec.samples);
@@ -564,10 +564,12 @@ impl<'a, Channel: AudioFormatNum> AudioQueue<Channel> {
             // device to an Option<&_> first.
             let device_ptr = device.as_ref().map_or(ptr::null(), |s| s.as_ptr());
 
-            let iscapture_flag = 0;
             let device_id = sys::SDL_OpenAudioDevice(
-                device_ptr as *const c_char, iscapture_flag, &desired,
-                obtained.as_mut_ptr(), 0
+                device_ptr as *const c_char,
+                is_capture as c_int,
+                &desired,
+                obtained.as_mut_ptr(),
+                0
             );
             match device_id {
                 0 => {
@@ -660,9 +662,8 @@ impl<CB: AudioCallback> AudioDevice<CB> {
             // device to an Option<&_> first.
             let device_ptr = device.as_ref().map_or(ptr::null(), |s| s.as_ptr());
 
-            let iscapture_flag = if capture { 1 } else { 0 };
             let device_id = sys::SDL_OpenAudioDevice(
-                device_ptr as *const c_char, iscapture_flag, &desired,
+                device_ptr as *const c_char, capture as c_int, &desired,
                 obtained.as_mut_ptr(), 0
             );
             match device_id {
