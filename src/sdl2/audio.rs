@@ -60,6 +60,7 @@ use std::path::Path;
 use std::marker::PhantomData;
 use std::mem;
 use std::ptr;
+use std::default::Default;
 
 use crate::AudioSubsystem;
 use crate::get_error;
@@ -95,10 +96,10 @@ impl AudioSubsystem {
 
     /// Opens a new audio device which uses queueing rather than older callback method.
     #[inline]
-    pub fn open_queue<'a, Channel, D>(&self, device: D, is_capture: bool, spec: &AudioSpecDesired) -> Result<AudioQueue<Channel>, String>
-    where Channel: AudioFormatNum, D: Into<Option<&'a str>>,
+    pub fn open_queue<'a, Channel, D>(&self, device: D, capture: bool, spec: &AudioSpecDesired) -> Result<AudioQueue<Channel>, String>
+    where Channel: AudioFormatNum + Clone + Default, D: Into<Option<&'a str>>,
     {
-        AudioQueue::open_queue(self, device, is_capture, spec)
+        AudioQueue::open_queue(self, device, capture, spec)
     }
 
     pub fn current_audio_driver(&self) -> &'static str {
@@ -110,8 +111,8 @@ impl AudioSubsystem {
         }
     }
 
-    pub fn get_num_audio_devices(&self, is_capture: bool) -> Option<u32> {
-        let result = unsafe { sys::SDL_GetNumAudioDevices(is_capture as i32) };
+    pub fn get_num_devices(&self, capture: bool) -> Option<u32> {
+        let result = unsafe { sys::SDL_GetNumAudioDevices(capture as i32) };
         if result < 0 {
             // SDL cannot retrieve a list of audio devices. This is not necessarily an error (see the SDL2 docs).
             None
@@ -120,9 +121,9 @@ impl AudioSubsystem {
         }
     }
 
-    pub fn get_audio_device_name(&self, index: u32, is_capture: bool) -> Result<String, String> {
+    pub fn get_device_name(&self, index: u32, capture: bool) -> Result<String, String> {
         unsafe {
-            let dev_name = sys::SDL_GetAudioDeviceName(index as c_int, is_capture as c_int);
+            let dev_name = sys::SDL_GetAudioDeviceName(index as c_int, capture as c_int);
             if dev_name.is_null() {
                 Err(get_error())
             } else {
@@ -331,7 +332,7 @@ impl Drop for AudioSpecWAV {
 }
 
 pub trait AudioCallback: Send
-where Self::Channel: AudioFormatNum + 'static
+where Self::Channel: AudioFormatNum + 'static + Default
 {
     type Channel;
 
@@ -546,9 +547,9 @@ pub struct AudioQueue<Channel: AudioFormatNum> {
     spec: AudioSpec,
 }
 
-impl<'a, Channel: AudioFormatNum> AudioQueue<Channel> {
+impl<'a, Channel: AudioFormatNum + Clone + Default> AudioQueue<Channel> {
     /// Opens a new audio device given the desired parameters and callback.
-    pub fn open_queue<D: Into<Option<&'a str>>>(a: &AudioSubsystem, device: D, is_capture: bool, spec: &AudioSpecDesired) -> Result<AudioQueue<Channel>, String> {
+    pub fn open_queue<D: Into<Option<&'a str>>>(a: &AudioSubsystem, device: D, capture: bool, spec: &AudioSpecDesired) -> Result<AudioQueue<Channel>, String> {
         use std::mem::MaybeUninit;
 
         let desired = AudioSpecDesired::convert_queue_to_ll::<Channel, Option<i32>, Option<u8>, Option<u16>>(spec.freq, spec.channels, spec.samples);
@@ -566,7 +567,7 @@ impl<'a, Channel: AudioFormatNum> AudioQueue<Channel> {
 
             let device_id = sys::SDL_OpenAudioDevice(
                 device_ptr as *const c_char,
-                is_capture as c_int,
+                capture as c_int,
                 &desired,
                 obtained.as_mut_ptr(),
                 0
@@ -618,6 +619,24 @@ impl<'a, Channel: AudioFormatNum> AudioQueue<Channel> {
     pub fn queue(&self, data: &[Channel]) -> bool {
         let result = unsafe {sys::SDL_QueueAudio(self.device_id.id(), data.as_ptr() as *const c_void, (data.len() * mem::size_of::<Channel>()) as u32)};
         result == 0
+    }
+
+    /// Dequeues audio
+    ///
+    /// len: request up to "len" bytes of data
+    ///
+    /// returns: A Vec<Channel> of upto len bytes
+    pub fn dequeue(&self, len: u32) -> (u32, Vec<Channel>) {
+        let mut data: Vec<Channel> = Vec::with_capacity(len as usize);
+        for _ in 0..len {
+            data.push(Channel::default());
+        }
+
+        let result = unsafe {
+            sys::SDL_DequeueAudio(
+                self.device_id.id(), data.as_ptr() as *mut c_void, len)
+        };
+        (result, data)
     }
 
     pub fn size(&self) -> u32 {
